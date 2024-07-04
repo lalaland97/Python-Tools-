@@ -1,0 +1,202 @@
+import os
+import re
+
+def remove_comments(sql_script):
+    sql_script = re.sub(r'--.*', '', sql_script)
+    sql_script = re.sub(r'/\*.*?\*/', '', sql_script, flags=re.DOTALL)
+    return sql_script
+
+def extract_tables(sql_script):
+    sql_script = remove_comments(sql_script)
+
+    # Destination table patterns
+    dest_patterns = [
+        re.compile(r'CREATE\s+(MULTISET\s+|SET\s+)?TABLE\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'CREATE\s+VOLATILE\s+TABLE\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'CREATE\s+MULTISET\s+VOLATILE\s+TABLE\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'CREATE\s+MULTISET\s+TABLE\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'CREATE\s+TABLE\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'INSERT\s+INTO\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'MERGE\s+INTO\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'UPDATE\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'DELETE\s+FROM\s+(\w+\.\w+)', re.IGNORECASE)
+    ]
+
+    # Source table patterns
+    src_patterns = [
+        re.compile(r'FROM\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'JOIN\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'USING\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'IN\s+\(SELECT\s+.*FROM\s+(\w+\.\w+)\)', re.IGNORECASE),
+        re.compile(r'UPDATE\s+.*FROM\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'DELETE\s+.*WHERE\s+.*IN\s+\(SELECT\s+.*FROM\s+(\w+\.\w+)\)', re.IGNORECASE)
+    ]
+
+    all_tables = set()
+    volatile_tables = set()
+
+    # Extract destination tables
+    for pattern in dest_patterns:
+        matches = pattern.findall(sql_script)
+        for match in matches:
+            if len(match) >= 2:
+                table_name = match[1]
+                all_tables.add(table_name)
+                if 'VOLATILE' in match[0].strip().upper():
+                    volatile_tables.add(table_name)
+
+    # Extract source tables
+    for pattern in src_patterns:
+        matches = pattern.findall(sql_script)
+        for match in matches:
+            if len(match) >= 1:
+                table_name = match[0]
+                if table_name not in volatile_tables:
+                    all_tables.add(table_name)
+
+    all_tables = {table for table in all_tables if '.' in table}
+    volatile_tables = {table for table in volatile_tables if '.' in table}
+
+    print(f"Extracted tables: {all_tables}")
+    print(f"Volatile tables: {volatile_tables}")
+
+    return list(all_tables), list(volatile_tables)
+
+def generate_statements(tables, suffix='_test', with_data=True, db_prefix=None):
+    statements = []
+    table_mapping = {}
+
+    for table in tables:
+        db_name, tbl_name = table.split('.')
+        test_tbl_name = f"{tbl_name}{suffix}"
+        if db_prefix:
+            target_table = f"{db_prefix}.{test_tbl_name}"
+        else:
+            target_table = f"{db_name}.{test_tbl_name}"
+        table_mapping[table] = target_table
+        if with_data:
+            statement = f"CREATE TABLE {target_table} AS {table} WITH DATA;"
+        else:
+            statement = f"CREATE TABLE {target_table} AS {table} WITH NO DATA;"
+        statements.append(statement)
+    
+    print(f"Generated statements: {statements}")
+    print(f"Table mapping: {table_mapping}")
+
+    return statements, table_mapping
+
+def create_test_tables(sql_script, suffix='_test', with_data=True, exclude_dbs=None, include_as_test=None, db_prefix=None):
+    all_tbls, volatile_tbls = extract_tables(sql_script)
+    if exclude_dbs is None:
+        exclude_dbs = set()
+
+    non_volatile_tbls = [
+        tbl for tbl in all_tbls
+        if tbl not in volatile_tbls and tbl.split('.')[0] not in exclude_dbs
+    ]
+
+    if include_as_test:
+        non_volatile_tbls.extend(include_as_test)
+
+    test_stmts, tbl_mapping = generate_statements(non_volatile_tbls, suffix, with_data, db_prefix)
+    return test_stmts, tbl_mapping
+
+def replace_tables(sql_script, tbl_mapping, keep_tables, exclude_dbs):
+    """
+    Replace original table names with test table names in SQL script.
+    """
+    print(f"Original SQL script:\n{sql_script}\n")
+    print(f"Table mapping:\n{tbl_mapping}\n")
+
+    for orig_tbl, test_tbl in tbl_mapping.items():
+        orig_db = orig_tbl.split('.')[0]
+        if orig_tbl not in keep_tables and orig_db not in exclude_dbs:
+            sql_script = re.sub(rf'\b{re.escape(orig_tbl)}\b', test_tbl, sql_script)
+
+    print(f"Modified SQL script:\n{sql_script}\n")
+
+    return sql_script
+
+def process_files(dir_path, suffix='_test', with_data=True, tbl_filter=None, single_output=False, specific_file=None, keep_tables=None, exclude_dbs=None, include_as_test=None):
+    all_stmts = []
+
+    if keep_tables is None:
+        keep_tables = set()
+
+    if exclude_dbs is None:
+        exclude_dbs = set()
+
+    db_prefix = input("Enter the database prefix for test tables (e.g., testdb): ").strip()
+
+    files_to_process = []
+    if specific_file:
+        if not specific_file.endswith('.sql'):
+            specific_file += '.sql'
+        files_to_process = [specific_file]
+    else:
+        files_to_process = [f for f in os.listdir(dir_path) if f.endswith(".sql")]
+
+    for filename in files_to_process:
+        input_path = os.path.join(dir_path, filename)
+        
+        with open(input_path, 'r') as file:
+            script = file.read()
+        
+        if tbl_filter:
+            if not any(re.search(rf'\b{tf.strip()}\b', script, re.IGNORECASE) for tf in tbl_filter):
+                continue
+
+        test_stmts, tbl_mapping = create_test_tables(script, suffix, with_data, exclude_dbs, include_as_test, db_prefix)
+
+        base_filename = os.path.splitext(filename)[0]
+
+        modified_script = replace_tables(script, tbl_mapping, keep_tables, exclude_dbs)
+        
+        # Save modified SQL script
+        if single_output:
+            all_stmts.append(modified_script)
+        else:
+            modified_path = os.path.join(dir_path, f"{base_filename}{suffix}.sql")
+            with open(modified_path, 'w') as file:
+                file.write(modified_script)
+            print(f"Processed {filename} and saved modified SQL script to {base_filename}{suffix}.sql")
+
+        # Save generated statements
+        stmts_path = os.path.join(dir_path, f"{base_filename}{suffix}_statements.sql")
+        with open(stmts_path, 'w') as file:
+            for statement in test_stmts:
+                file.write(statement + '\n')
+        print(f"Saved generated statements to {base_filename}{suffix}_statements.sql")
+
+    if single_output and all_stmts:
+        output_path = os.path.join(dir_path, f"modified_scripts{suffix}.sql")
+        with open(output_path, 'w') as file:
+            for statement in all_stmts:
+                file.write(statement + '\n')
+        print(f"All modified SQL scripts have been saved to {output_path}")
+
+if __name__ == "__main__":
+    dir_path = r"C:\Users\asus\OneDrive\Desktop\sql_scripts"
+
+    with_data_input = input("Create tables with data? (yes/no): ").strip().lower()
+    with_data = with_data_input in ['yes', 'y']
+
+    tbl_filter_input = input("Enter table names to filter SQL scripts, comma-separated (leave blank to process all scripts): ").strip()
+    tbl_filter = [tbl.strip() for tbl in tbl_filter_input.split(',')] if tbl_filter_input else None
+
+    specific_file_input = input("Process specific file? Enter filename (with/without .sql extension) or leave blank for all files: ").strip()
+    specific_file = specific_file_input if specific_file_input else None
+
+    single_output_input = input("Output all statements to single file? (yes/no): ").strip().lower()
+    single_output = single_output_input in ['yes', 'y']
+
+    keep_tables_input = input("Tables to keep unchanged (e.g., db1.tbl1,db2.tbl2): ").strip()
+    keep_tables = set(keep_tables_input.split(',')) if keep_tables_input else set()
+
+    exclude_dbs_input = input("Databases to exclude (e.g., db1,db2): ").strip()
+    exclude_dbs = set(exclude_dbs_input.split(',')) if exclude_dbs_input else set()
+
+    suffix = input("Suffix for test tables (default: '_test'): ").strip() or '_test'
+
+    include_as_test_input = input("Tables to create as test tables even if source tables (comma-separated): ").strip()
+    include_as_test = [tbl.strip() for tbl in include_as_test_input.split(',')] if include_as_test
