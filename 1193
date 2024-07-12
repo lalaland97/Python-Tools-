@@ -1,0 +1,137 @@
+import os
+import re
+import teradatasql  # Import the Teradata library
+
+# Database connection parameters
+HOST = 'your_teradata_host'
+USER = 'your_teradata_username'
+PASSWORD = 'your_teradata_password'
+
+# Example existing Teradata connection object
+conn = teradatasql.connect(
+    host=HOST,
+    user=USER,
+    password=PASSWORD
+)
+
+def remove_comments(sql_script):
+    """
+    Remove comments from the SQL script.
+
+    Args:
+    - sql_script (str): SQL script content.
+
+    Returns:
+    - str: SQL script with comments removed.
+    """
+    sql_script = re.sub(r'--.*', '', sql_script)
+    sql_script = re.sub(r'/\*.*?\*/', '', sql_script, flags=re.DOTALL)
+    return sql_script
+
+def extract_tables(sql_script, script_name):
+    """
+    Extract source tables and destination tables from the SQL script.
+
+    Args:
+    - sql_script (str): SQL script content.
+    - script_name (str): Name of the SQL script file.
+
+    Returns:
+    - tuple: script_name (str), from_tables (list of str), to_tables (list of str)
+      script_name: Name of the SQL script file.
+      from_tables: List of source tables found in the script.
+      to_tables: List of destination tables found in the script.
+    """
+    sql_script = remove_comments(sql_script)
+
+    # Destination table patterns
+    dest_patterns = [
+        re.compile(r'CREATE\s+(MULTISET\s+|SET\s+)?TABLE\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'CREATE\s+VOLATILE\s+TABLE\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'CREATE\s+MULTISET\s+VOLATILE\s+TABLE\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'CREATE\s+MULTISET\s+TABLE\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'CREATE\s+TABLE\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'INSERT\s+INTO\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'MERGE\s+INTO\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'UPDATE\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'DELETE\s+FROM\s+(\w+\.\w+)', re.IGNORECASE)
+    ]
+
+    # Source table patterns
+    src_patterns = [
+        re.compile(r'FROM\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'JOIN\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'USING\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'IN\s+\(SELECT\s+.*FROM\s+(\w+\.\w+)\)', re.IGNORECASE),
+        re.compile(r'UPDATE\s+.*FROM\s+(\w+\.\w+)', re.IGNORECASE),
+        re.compile(r'DELETE\s+.*WHERE\s+.*IN\s+\(SELECT\s+.*FROM\s+(\w+\.\w+)\)', re.IGNORECASE)
+    ]
+
+    all_from_tables = set()
+    all_to_tables = set()
+
+    # Extract destination tables
+    for pattern in dest_patterns:
+        matches = pattern.findall(sql_script)
+        for match in matches:
+            if len(match) >= 2:
+                table_name = match[1]
+                all_to_tables.add(table_name)
+
+    # Extract source tables
+    for pattern in src_patterns:
+        matches = pattern.findall(sql_script)
+        for match in matches:
+            if len(match) >= 1:
+                table_name = match[0]
+                all_from_tables.add(table_name)
+
+    all_from_tables = {table for table in all_from_tables if '.' in table}
+    all_to_tables = {table for table in all_to_tables if '.' in table}
+
+    return script_name, list(all_from_tables), list(all_to_tables)
+
+def insert_into_database(script_name, from_tables, to_tables):
+    """
+    Insert extracted tables into the Teradata database.
+
+    Args:
+    - script_name (str): Name of the SQL script file.
+    - from_tables (list of str): List of source tables.
+    - to_tables (list of str): List of destination tables.
+    """
+    try:
+        with conn.cursor() as cur:
+            for from_table in from_tables:
+                for to_table in to_tables:
+                    cur.execute(f"INSERT INTO your_existing_table_name (script_name, from_table, to_table) VALUES (?, ?, ?)",
+                                (script_name, from_table, to_table))
+                    print(f"Inserted into database: {script_name}, {from_table}, {to_table}")
+    except teradatasql.DatabaseError as e:
+        print(f"Error inserting into database: {e}")
+
+def process_files(dir_path):
+    """
+    Process all SQL scripts in the specified directory.
+
+    Args:
+    - dir_path (str): Directory path containing SQL scripts.
+    """
+    files_to_process = [f for f in os.listdir(dir_path) if f.endswith(".sql")]
+
+    for filename in files_to_process:
+        input_path = os.path.join(dir_path, filename)
+        
+        with open(input_path, 'r') as file:
+            script = file.read()
+
+        script_name, from_tables, to_tables = extract_tables(script, filename)
+
+        # Insert into Teradata database
+        insert_into_database(script_name, from_tables, to_tables)
+
+if __name__ == "__main__":
+    dir_path = r"C:\Users\asus\OneDrive\Desktop\sql_scripts"
+
+    # Process all SQL scripts in the specified directory
+    process_files(dir_path)
