@@ -1,0 +1,114 @@
+import pyodbc
+import pandas as pd
+
+# Database connection details for Teradata
+server = 'your_server_name'
+database = 'your_database_name'
+username = 'your_username'
+password = 'your_password'
+
+# List of journey IDs to check
+journey_ids = ['cj068.03', 'cj123.01', 'cj456.02']  # Add your actual journey IDs here
+
+# Establish connection to the Teradata database
+def connect_to_db():
+    connection_string = f'DRIVER={{Teradata}};DBCNAME={server};DATABASE={database};UID={username};PWD={password}'
+    conn = pyodbc.connect(connection_string)
+    return conn
+
+# SQL query to fetch data and count records by month and journey_id
+def get_journey_data(journey_ids):
+    conn = connect_to_db()
+
+    # Convert the journey_ids list into a string (with quotes) for use in the SQL query
+    journey_ids_str = ', '.join([f"'{journey_id}'" for journey_id in journey_ids])
+
+    query = f"""
+    SELECT 
+        CAST(EXTRACT(YEAR FROM journey_date) AS INTEGER) AS journey_year,
+        CAST(EXTRACT(MONTH FROM journey_date) AS INTEGER) AS journey_month,
+        journey_id, 
+        COUNT(*) AS record_count
+    FROM 
+        your_table_name
+    WHERE 
+        journey_id IN ({journey_ids_str})
+    GROUP BY 
+        journey_year, journey_month, journey_id
+    ORDER BY 
+        journey_id, journey_year, journey_month;
+    """
+
+    # Execute query and fetch the data into a pandas DataFrame
+    df = pd.read_sql(query, conn)
+    conn.close()
+    return df
+
+# Function to calculate MoM (Month-over-Month) difference in record counts
+def calculate_mom(df):
+    # Sort by journey_id, year, and month
+    df.sort_values(by=['journey_id', 'journey_year', 'journey_month'], inplace=True)
+
+    # Calculate the previous month's count for each journey_id
+    df['prev_month_count'] = df.groupby('journey_id')['record_count'].shift(1)
+
+    # Calculate MoM change (difference from previous month)
+    df['mom_change'] = df['record_count'] - df['prev_month_count']
+
+    # Calculate MoM percentage change
+    df['mom_percentage_change'] = (df['mom_change'] / df['prev_month_count']) * 100
+    
+    return df
+
+# Function to check for missing journey_ids for specific months
+def check_missing_journeys(df, journey_ids):
+    all_months = pd.MultiIndex.from_product(
+        [journey_ids, df['journey_year'].unique(), df['journey_month'].unique()],
+        names=['journey_id', 'journey_year', 'journey_month']
+    )
+    
+    # Create a dataframe with all possible combinations of journey_id, year, and month
+    full_df = pd.DataFrame(index=all_months).reset_index()
+
+    # Merge with the actual data to identify missing journey IDs for specific months
+    merged_df = pd.merge(full_df, df, on=['journey_id', 'journey_year', 'journey_month'], how='left')
+
+    # Flag missing entries (i.e., where the record count is NaN)
+    missing_data = merged_df[merged_df['record_count'].isna()]
+    
+    if not missing_data.empty:
+        print("\nMissing Journey IDs for the following months:")
+        print(missing_data[['journey_id', 'journey_year', 'journey_month']])
+    else:
+        print("\nNo missing Journey IDs for any month.")
+
+# Function to generate the report and display the data
+def generate_report(df):
+    print("\nJourney ID Report (Month-over-Month Comparison):")
+    print("\n" + "-" * 50)
+    print(f"{'Journey ID':<15}{'Year':<6}{'Month':<6}{'Record Count':<15}{'Prev Month Count':<20}{'MoM Change':<15}{'MoM % Change':<15}")
+    print("-" * 50)
+
+    for _, row in df.iterrows():
+        print(f"{row['journey_id']:<15}{row['journey_year']:<6}{row['journey_month']:<6}{row['record_count']:<15}{row['prev_month_count']:<20}{row['mom_change']:<15}{row['mom_percentage_change']:<15.2f}")
+
+    # Optionally, write the report to a CSV file
+    df.to_csv('journey_report.csv', index=False)
+    print("\nReport has been written to 'journey_report.csv'")
+
+# Main function to run the script
+def main():
+    # Get the journey data
+    df = get_journey_data(journey_ids)
+    
+    # Check if any journey IDs are missing for specific months
+    check_missing_journeys(df, journey_ids)
+    
+    # Calculate MoM comparisons
+    df_with_mom = calculate_mom(df)
+    
+    # Generate the report
+    generate_report(df_with_mom)
+
+if __name__ == '__main__':
+    main()
