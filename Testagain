@@ -1,0 +1,47 @@
+from datetime import datetime, timedelta
+
+# Define a simplified version of the SQL script as an example.
+# Replace this with the actual file path if you want to read from a file.
+sql_script_example = """
+SELECT * FROM my_table
+WHERE date_column BETWEEN '${refresh_start_date}' AND '${refresh_end_date}';
+"""
+
+def get_first_day_of_month(date):
+    """Returns the first day of the month for a given date."""
+    return date.replace(day=1)
+
+def get_last_day_of_month(date):
+    """Returns the last day of the month for a given date."""
+    # Move to the next month and subtract one day
+    if date.month == 12:
+        next_month = date.replace(year=date.year + 1, month=1)
+    else:
+        next_month = date.replace(month=date.month + 1)
+    
+    # Get the last day of the current month by subtracting one day from the first day of the next month
+    last_day = next_month - timedelta(days=1)
+    return last_day
+
+def test_date_replacement():
+    # Get the current date
+    current_date = datetime.now()
+
+    # Calculate the start date (6 months ago)
+    start_date = current_date - timedelta(days=6*30)  # Approximate 6 months as 180 days
+    end_date = current_date - timedelta(days=1)  # The end date is the last day before today
+
+    # Format the dates in YYYY-MM-DD format
+    refresh_start_date = get_first_day_of_month(start_date).strftime("%Y-%m-%d")
+    refresh_end_date = get_last_day_of_month(start_date).strftime("%Y-%m-%d")
+
+    # Test by replacing the placeholders in the example SQL script
+    sql_script = sql_script_example.replace('${refresh_start_date}', refresh_start_date)
+    sql_script = sql_script.replace('${refresh_end_date}', refresh_end_date)
+
+    # Print the final SQL query after the replacements
+    print("SQL query after replacements:")
+    print(sql_script)
+
+if __name__ == "__main__":
+    test_date_replacement()
