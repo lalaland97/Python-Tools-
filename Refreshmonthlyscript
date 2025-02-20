@@ -1,0 +1,100 @@
+import teradatasql
+from datetime import datetime, timedelta
+import time
+
+# Configuration
+host = "your_teradata_host"
+username = "your_username"
+password = "your_password"
+sql_file = "path/to/your/sql_script.sql"
+delay_seconds = 5          # Optional delay between executions
+
+def get_connection():
+    """Establishes a connection to Teradata."""
+    return teradatasql.connect(
+        host=host,
+        user=username,
+        password=password
+    )
+
+def get_first_day_of_month(date):
+    """Returns the first day of the month for a given date."""
+    return date.replace(day=1)
+
+def get_last_day_of_month(date):
+    """Returns the last day of the month for a given date."""
+    # Move to the next month and subtract one day
+    if date.month == 12:
+        next_month = date.replace(year=date.year + 1, month=1)
+    else:
+        next_month = date.replace(month=date.month + 1)
+    
+    # Get the last day of the current month by subtracting one day from the first day of the next month
+    last_day = next_month - timedelta(days=1)
+    return last_day
+
+def get_next_month(date):
+    """Returns the first day of the next month."""
+    if date.month == 12:
+        return date.replace(year=date.year + 1, month=1, day=1)
+    else:
+        return date.replace(month=date.month + 1, day=1)
+
+def run_sql_script(connection, sql):
+    """Executes the given SQL script on Teradata."""
+    with connection.cursor() as cursor:
+        cursor.execute(sql)
+        print("Query executed successfully.")
+
+def main():
+    # Establish connection
+    connection = get_connection()
+
+    # Get the current date
+    current_date = datetime.now()
+
+    # Calculate August 1st of the current year (or previous year if before August)
+    if current_date.month >= 8:
+        start_year = current_date.year
+    else:
+        start_year = current_date.year - 1
+    august_first = datetime(start_year, 8, 1)
+
+    # Calculate the start date for the 6-month range
+    start_date = august_first - timedelta(days=6*30)  # Approximate 6 months as 180 days
+    end_date = august_first - timedelta(days=1)  # The end date is the last day before the current August 1st
+
+    # Loop through the last 6 months and run the SQL script
+    while start_date <= end_date:
+        # Calculate start and end dates for the month
+        refresh_start_date = get_first_day_of_month(start_date).strftime("%Y-%m-%d")
+        refresh_end_date = get_last_day_of_month(start_date).strftime("%Y-%m-%d")
+
+        # Read and prepare SQL script
+        with open(sql_file, 'r') as file:
+            sql_script = file.read()
+        
+        # Replace the date placeholders in the SQL script
+        sql_script = sql_script.replace('${refresh_start_date}', refresh_start_date)
+        sql_script = sql_script.replace('${refresh_end_date}', refresh_end_date)
+
+        # Display the executed date for logging
+        print(f"Running for start date: {refresh_start_date} and end date: {refresh_end_date}")
+
+        # Run the SQL script
+        run_sql_script(connection, sql_script)
+
+        # Move to the next month
+        start_date = get_next_month(start_date)
+
+        # Optional delay between executions
+        if delay_seconds > 0:
+            print(f"Waiting for {delay_seconds} seconds before the next run...")
+            time.sleep(delay_seconds)
+
+    # Close connection
+    connection.close()
+    print("All tasks completed successfully.")
+
+if __name__ == "__main__":
+    main()
